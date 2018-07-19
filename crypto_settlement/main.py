@@ -4,8 +4,6 @@ import datetime as dt
 import time
 import requests
 
-from PublicClient import PublicClient
-
 pd.options.mode.chained_assignment = None
 
 
@@ -27,11 +25,10 @@ def iso_converter(s):
     return t
 
 
-def data_retriever(prod_id='BTC-USD', amt=100):
+def data_retriever(prod_id='BTC-USD'):
     """
     args:
         prod_id: product ID, eg. BTC-USD, ETH-USD
-        lim: API rate limit
 
     return: new data retrieved from GDAX
     """
@@ -39,23 +36,10 @@ def data_retriever(prod_id='BTC-USD', amt=100):
     url = 'https://api.gdax.com/products/{}/trades'.format(str(prod_id))
     r = requests.get(url)
 
-    # Get raw data
-    raw_data = public_client.get_product_trades(product_id=prod_id,
-                                                limit=lim)
-    print(str(len(raw_data)) + ' data points have been collected...')
-
-    while len(raw_data) < lim:
-        # Get raw data
-        raw_data = public_client.get_product_trades(product_id=prod_id,
-                                                    limit=lim)
-        print(str(len(raw_data)) + ' data points have been collected...')
-        time.sleep(0.4) # GDAX rate limit: 3 requests per second
-
-    print('Data collection complete!')
-    print('Last retrieval time (UTC): ' + str(dt.datetime.utcnow()))
+    raw_data = r.json()
 
     # Convert to dataframe and keep desired amount of data
-    df = pd.DataFrame(raw_data).set_index('trade_id')[0:lim]
+    df = pd.DataFrame(raw_data).set_index('trade_id')
 
     # Convert string to datetime object
     df['time'] = df['time'].apply(iso_converter)
@@ -109,7 +93,7 @@ def select_data(data, delay=20, first_exec=True):
     """
 
 
-def parties_assign(n_parties, table):
+def parties_assign(n_parties, table1, table2=None):
     """
     Assign buyers and sellers to each trade
 
@@ -118,18 +102,38 @@ def parties_assign(n_parties, table):
         table: the table of trades
     """
     # print('parties_assign received table:')
-    # print(table)
+
     parties_list = []
 
-    for i in np.arange(len(table)):
-        parties_list.append(np.random.choice(n_parties, 2, replace=False))
+    if table2 is not None:
+        merged = table1.reset_index().merge(table2.reset_index(),
+                                            indicator=True,
+                                            how='outer').set_index('trade_id')
+        new_rows = merged[merged['_merge'] == 'right_only'].drop('_merge',
+                                                                 axis=1)
 
-    parties_list = np.array(parties_list)
+        if len(new_rows) > 0:
 
-    table['Buyer'] = parties_list[:, 0]
-    table['Seller'] = parties_list[:, 1]
+            for i in np.arange(len(new_rows)):
+                parties_list.append(np.random.choice(10, 2, replace=False))
 
-    return table
+            parties_list = np.array(parties_list)
+
+            new_rows['Buyer'] = parties_list[:, 0]
+            new_rows['Seller'] = parties_list[:, 1]
+
+            table1 = pd.concat([table1, new_rows])
+
+    else:
+        for i in np.arange(len(table1)):
+            parties_list.append(np.random.choice(n_parties, 2, replace=False))
+
+        parties_list = np.array(parties_list)
+
+        table1['Buyer'] = parties_list[:, 0]
+        table1['Seller'] = parties_list[:, 1]
+
+    return table1.sort_index(ascending=False)
 
 
 def vwap_settlement(data, window=3600):
@@ -156,15 +160,21 @@ if __name__ == '__main__':
     # Loop will run until keyboard interrupt (Ctrl-C)
     try:
         # Set initial balance for counterparties
-        balances = pd.DataFrame({'Party': range(10), 'Balance': 100000}).set_index('Party')
+        balances = pd.DataFrame({'Party': range(10),
+                                 'Balance': 100000}).set_index('Party')
+        start_time = time.time()
 
         # 1st data retrieval
-        trades_BTC = data_retriever('BTC-USD', 1000)
-        trades_ETH = data_retriever('ETH-USD', 1000)
+        trades_BTC = data_retriever('BTC-USD')
+        trades_ETH = data_retriever('ETH-USD')
 
         # Assign trades to counter parties
         trades_BTC = parties_assign(10, trades_BTC)
         trades_ETH = parties_assign(10, trades_ETH)
+
+        # Trigger execution every preset time interval
+        elapsed_time = time.time() - start_time
+        time.sleep(max(0, 10 - elapsed_time))
 
         # Iterate executions
         while True:
@@ -172,22 +182,19 @@ if __name__ == '__main__':
             start_time = time.time()
 
             # Retrieve existing trades up to 1000
-            new_trades_BTC = data_retriever('BTC-USD', 1000)
-            new_trades_ETH = data_retriever('ETH-USD', 1000)
+            new_trades_BTC = data_retriever('BTC-USD')
+            new_trades_ETH = data_retriever('ETH-USD')
 
             # Assign trades to counter parties
-            new_trades_BTC = parties_assign(10, new_trades_BTC)
-            new_trades_ETH = parties_assign(10, new_trades_ETH)
+            trades_BTC = parties_assign(10, trades_BTC, new_trades_BTC)
+            trades_ETH = parties_assign(10, trades_ETH, new_trades_ETH)
 
-            pd.concat([trades_BTC,new_trades_BTC], ignore_index=False)
-            pd.concat([trades_ETH, new_trades_ETH], ignore_index=False)
-
-
-            #settlements = vwap_settlement(trades)
+            # settlements = vwap_settlement(trades_BTC)
+            # settlements = vwap_settlement(trades_BTC)
 
             # Trigger execution every preset time interval
             elapsed_time = time.time() - start_time
-            time.sleep(30 - elapsed_time)
+            time.sleep(max(0, 10 - elapsed_time))
 
     except KeyboardInterrupt:
         pass
